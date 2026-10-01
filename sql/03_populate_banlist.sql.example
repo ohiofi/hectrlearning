@@ -1,0 +1,8 @@
+-- sql/03_populate_banlist.sql.example
+-- DO NOT COMMIT REAL SLURS TO GIT. 
+-- Copy this file locally or run it directly in the Supabase SQL Editor.
+
+INSERT INTO banlist (word) VALUES 
+('example_bad_word_1'),
+('example_bad_word_2')
+ON CONFLICT (word) DO NOTHING;
