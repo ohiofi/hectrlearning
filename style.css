@@ -6,8 +6,9 @@
 
 body {
   font-family: sans-serif;
-  margin: 2em 1em;
+  margin: 2em 4em;
   line-height: 1.5em;
+  background-color: #f0f8ff;
 }
 h1{
   margin-bottom:0;
