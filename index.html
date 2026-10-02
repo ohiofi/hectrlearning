@@ -7,30 +7,29 @@
     <link rel="stylesheet" href="style.css" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
-    <script src="script.js" defer></script>
+    <script type="module" src="/script.js"></script>
   </head>
   <body>
-    <header>
+    <header class="chat-header">
       <h1>HECT-R Learning Chatbot</h1>
       <small>Hilliard Experiences Chatbot Teaching Resource</small> 🤖
     </header>
 
-    <main>
-      <ul id="mylist"></ul>
+    <main id="chat-window"></main>
 
-      <form id="myform">
+      <form id="chat-form">
         <input
-          id="userQuestionBox"
+          id="user-input"
           type="text"
           maxlength="100"
           required
-          placeholder="Ask me a Question"
+          placeholder="Ask me a Question" required 
         />
-        <button type="button" id="submit-dream" onclick="submitQuestion()">
+        <button type="submit">
           Ask
         </button>
       </form>
-    </main>
+   
 
     <!-- <div id="codeButton">
       <a href="dictionary.json">

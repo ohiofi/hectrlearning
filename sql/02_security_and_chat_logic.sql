@@ -1,101 +1,109 @@
--- 02_security_and_chat_logic.sql
+-- Query Name: 02_security_and_chat_logic.sql
+-- Description: Configures RLS policies, access controls, and the process_chat stored procedure.
 
--- 1. Security Policies
-CREATE POLICY "Public read dictionary" ON dictionary FOR SELECT USING (true);
-REVOKE ALL ON banlist FROM anon, authenticated;
+-- ==========================================
+-- 1. ROW LEVEL SECURITY (RLS) & PRIVILEGES
+-- ==========================================
 
--- 2. Baseline Seed Data
-INSERT INTO dictionary (keyword, responses) VALUES
-('default', ARRAY[
-    'Sorry, I''m not quite sure. How are you?',
-    'Sorry, I don''t know what to say. How are you?',
-    'Sorry, I don''t understand. How are you?'
-]),
-('welcome', ARRAY[
-    'Howdy! How are you?',
-    'Hello! How are you today?',
-    'Good day. How are you?'
-]),
-('feeling', ARRAY[
-    'How are you feeling today?'
-]),
-('hi', ARRAY[
-    'Howdy partner! I''m HECT-R. How are you?',
-    'Hi, how are you? My name is HECT-R.',
-    'Oh, hi...HECT-R here. How are you?'
-]),
-('hello', ARRAY[
-    'Hi, how are you? I''m HECT-R.',
-    'Oh, hi! HECT-R here. How are you?'
-]),
-('bye', ARRAY[
-    'See you later alligator...',
-    'Sweet dreams and flying machines!',
-    'Peace out! Toodaloo Kangaroo!'
-])
-ON CONFLICT (keyword) DO NOTHING;
+-- Enable Row Level Security on both tables
+ALTER TABLE dictionary ENABLE ROW LEVEL SECURITY;
+ALTER TABLE banlist ENABLE ROW LEVEL SECURITY;
 
--- 3. Stored Procedure
+-- Allow public read access to the dictionary
+DROP POLICY IF EXISTS "Public read dictionary" ON dictionary;
+CREATE POLICY "Public read dictionary" ON dictionary 
+    FOR SELECT TO public USING (true);
+
+-- Restrict direct access to the moderation banlist
+REVOKE ALL ON banlist FROM anon, authenticated, public;
+
+-- Grant execution permissions for the stored procedure
+GRANT EXECUTE ON FUNCTION process_chat(TEXT, TEXT) TO anon, authenticated, public;
+
+-- ==========================================
+-- 2. CORE CHAT LOGIC PROCEDURE
+-- ==========================================
+
 CREATE OR REPLACE FUNCTION process_chat(
     p_user_input TEXT,
-    p_last_bot_keyword TEXT DEFAULT NULL
+    p_last_bot_keyword TEXT
 )
-RETURNS JSONB
+RETURNS TABLE (
+    response TEXT,
+    next_keyword TEXT
+) 
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY DEFINER -- Runs with creator privileges to bypass direct banlist/dictionary write restrictions
 AS $$
 DECLARE
-    v_cleaned_input TEXT;
-    v_is_banned BOOLEAN := FALSE;
-    v_matched_responses TEXT[] := '{}';
+    v_clean_input TEXT;
+    v_clean_context TEXT;
     v_selected_response TEXT;
-    v_next_keyword TEXT := NULL;
+    v_next_keyword TEXT;
+    v_is_banned BOOLEAN := FALSE;
 BEGIN
-    v_cleaned_input := LOWER(TRIM(p_user_input));
+    -- 1. Normalize inputs
+    v_clean_input := lower(trim(p_user_input));
+    v_clean_context := COALESCE(lower(trim(p_last_bot_keyword)), 'welcome');
 
-    SELECT EXISTS (
+    -- 2. Moderation Check: Scan input against banlist
+    IF EXISTS (
         SELECT 1 FROM banlist 
-        WHERE v_cleaned_input ~* ('\y' || word || '\y')
-    ) INTO v_is_banned;
+        WHERE v_clean_input LIKE '%' || lower(phrase) || '%'
+    ) THEN
+        v_is_banned := TRUE;
+    END IF;
 
+    -- 3. Self-Learning Step: Update previous keyword array (Only if input is safe)
+    IF NOT v_is_banned AND EXISTS (SELECT 1 FROM dictionary WHERE keyword = v_clean_context) THEN
+        UPDATE dictionary 
+        SET responses = (
+            SELECT array_agg(DISTINCT elem) 
+            FROM unnest(responses || ARRAY[p_user_input]) AS elem
+        )
+        WHERE keyword = v_clean_context;
+    END IF;
+
+    -- 4. Banned Input Guardrail Response
     IF v_is_banned THEN
-        RETURN jsonb_build_object(
-            'response', 'Please keep messages appropriate.',
-            'is_banned', TRUE,
-            'next_keyword', p_last_bot_keyword
-        );
+        RETURN QUERY SELECT 
+            'Please keep the conversation respectful and safe.'::TEXT, 
+            'default'::TEXT;
+        RETURN;
     END IF;
 
-    IF p_last_bot_keyword IS NOT NULL AND CHAR_LENGTH(v_cleaned_input) > 0 THEN
-        INSERT INTO dictionary (keyword, responses)
-        VALUES (LOWER(p_last_bot_keyword), ARRAY[p_user_input])
-        ON CONFLICT (keyword) 
-        DO UPDATE SET responses = array_append(dictionary.responses, p_user_input)
-        WHERE NOT (dictionary.responses @> ARRAY[p_user_input]);
-    END IF;
-
-    SELECT array_agg(resp) INTO v_matched_responses
-    FROM (
-        SELECT unnest(responses) AS resp, keyword
-        FROM dictionary
-        WHERE v_cleaned_input LIKE '%' || keyword || '%'
-    ) sub;
-
-    IF v_matched_responses IS NULL OR cardinality(v_matched_responses) = 0 THEN
-        SELECT responses INTO v_matched_responses FROM dictionary WHERE keyword = 'default';
-    END IF;
-
-    v_selected_response := v_matched_responses[1 + floor(random() * cardinality(v_matched_responses))::int];
-
+    -- 5. Matching Step: Find longest matching keyword inside user input
     SELECT keyword INTO v_next_keyword
     FROM dictionary
-    WHERE v_cleaned_input LIKE '%' || keyword || '%'
+    WHERE v_clean_input LIKE '%' || keyword || '%'
+    ORDER BY length(keyword) DESC
     LIMIT 1;
 
-    RETURN jsonb_build_object(
-        'response', v_selected_response,
-        'is_banned', FALSE,
-        'next_keyword', COALESCE(v_next_keyword, p_last_bot_keyword)
-    );
+    -- 6. Auto-Seed Missing Keywords: Create new dictionary entry if unknown
+    IF v_next_keyword IS NULL THEN
+        v_next_keyword := v_clean_input;
+        
+        INSERT INTO dictionary (keyword, responses)
+        VALUES (
+            v_next_keyword, 
+            ARRAY['That''s interesting! Tell me more.', 'I see. How does that make you feel?']
+        )
+        ON CONFLICT (keyword) DO NOTHING;
+    END IF;
+
+    -- 7. Response Selection: Pick a random string from the target keyword's array
+    SELECT elem INTO v_selected_response
+    FROM dictionary, unnest(responses) AS elem
+    WHERE keyword = v_next_keyword
+    ORDER BY random()
+    LIMIT 1;
+
+    -- Fallback safety check
+    IF v_selected_response IS NULL THEN
+        v_selected_response := 'Fascinating! Tell me more.';
+    END IF;
+
+    -- Return response payload to client
+    RETURN QUERY SELECT v_selected_response, v_next_keyword;
 END;
 $$;
