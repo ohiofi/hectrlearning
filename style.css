@@ -68,16 +68,18 @@ div.user,
   background-color: #2563eb;
   color: #ffffff;
   border-radius: 16px 16px 2px 16px;
+  box-shadow: 4px 4px 2px 0px rgba(0, 0, 0, 0.15);
 }
 
 /* Bot Message Bubble */
 div.bot,
 .message.bot {
   align-self: flex-start;
-  background-color: #f1f5f9;
+  background-color: #ffffff;
   color: #0f172a;
   border: 1px solid #e2e8f0;
   border-radius: 16px 16px 16px 2px;
+  box-shadow: 4px 4px 2px 0px rgba(0, 0, 0, 0.15);
 }
 
 /* Form locked strictly to bottom of viewport */
